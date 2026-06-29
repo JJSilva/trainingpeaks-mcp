@@ -40,6 +40,26 @@ from tp_mcp.server import _validate_auth_on_startup, server
 logger = logging.getLogger("tp-mcp.http")
 
 
+class _NormalizeMcpPath:
+    """Rewrite a bare ``/mcp`` request to ``/mcp/`` in-process.
+
+    Mounted ASGI apps only match the trailing-slash form, and Starlette would
+    otherwise answer ``/mcp`` with a 307 redirect. Behind Railway's TLS proxy
+    that redirect points at ``http://`` and many MCP clients refuse to follow
+    it. Rewriting the path here keeps everything on one request/scheme.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
 def _build_app() -> Starlette:
     """Build the Starlette app that serves the MCP server over HTTP."""
     # Stateless mode keeps each request self-contained, which plays nicely with
@@ -69,17 +89,17 @@ def _build_app() -> Starlette:
             yield
             logger.info("TrainingPeaks MCP server shutting down")
 
-    return Starlette(
+    starlette_app = Starlette(
         debug=False,
         routes=[
             Route("/", health, methods=["GET"]),
             Route("/health", health, methods=["GET"]),
-            # MCP endpoint. A POST to "/mcp" 307-redirects to "/mcp/", which
-            # preserves method+body, so both paths work for compliant clients.
             Mount("/mcp", app=handle_mcp),
         ],
         lifespan=lifespan,
     )
+    # Serve the MCP endpoint at both "/mcp" and "/mcp/" with no HTTP redirect.
+    return _NormalizeMcpPath(starlette_app)
 
 
 def run_http_server() -> int:
