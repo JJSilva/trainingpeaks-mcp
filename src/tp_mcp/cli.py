@@ -165,6 +165,20 @@ def cmd_serve() -> int:
     return run_server()
 
 
+def cmd_serve_http() -> int:
+    """Start the MCP server over Streamable HTTP (for hosted/remote use).
+
+    Listens on $PORT (default 8000) and serves the MCP endpoint at /mcp.
+    Intended for platforms like Railway. Auth uses the TP_AUTH_COOKIE env var.
+
+    Returns:
+        Exit code.
+    """
+    from tp_mcp.http_server import run_http_server
+
+    return run_http_server()
+
+
 def cmd_config() -> int:
     """Output Claude Desktop config snippet.
 
@@ -210,7 +224,8 @@ def cmd_help() -> int:
     print("  auth-status           Check authentication status")
     print("  auth-clear            Clear stored cookie")
     print("  config                Output Claude Desktop config snippet")
-    print("  serve                 Start the MCP server")
+    print("  serve                 Start the MCP server (stdio, for local clients)")
+    print("  serve-http            Start the MCP server over HTTP (for hosting, e.g. Railway)")
     print("  help                  Show this help message")
     print()
     print("Examples:")
@@ -250,6 +265,7 @@ def main() -> int:
         "auth-clear": cmd_auth_clear,
         "config": cmd_config,
         "serve": cmd_serve,
+        "serve-http": cmd_serve_http,
         "help": cmd_help,
         "--help": cmd_help,
         "-h": cmd_help,
