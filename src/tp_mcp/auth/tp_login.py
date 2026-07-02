@@ -29,11 +29,14 @@ SECURITY:
 from __future__ import annotations
 
 import contextlib
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from html.parser import HTMLParser
 
 import httpx
+
+logger = logging.getLogger("tp-mcp.tp_login")
 
 TP_LOGIN_BASE = "https://home.trainingpeaks.com"
 LOGIN_PATH = "/login"
@@ -296,6 +299,7 @@ async def login(
     http, owns = _new_client(client)
     try:
         token = await _fetch_login_page(http)
+        logger.info("tp_login: fetched login page (anti-forgery token found=%s)", bool(token))
         form = _build_form(
             username=username,
             password=password,
@@ -305,6 +309,13 @@ async def login(
         )
         resp = await http.post(f"{TP_LOGIN_BASE}{LOGIN_PATH}", data=form)
         outcome, parser = _classify(http, resp)
+        logger.info(
+            "tp_login: POST status=%s final_host=%s auth_cookie=%s outcome=%s",
+            resp.status_code,
+            resp.url.host,
+            _extract_auth_cookie(http) is not None,
+            outcome.value,
+        )
 
         if outcome == LoginOutcome.SUCCESS:
             return LoginResult(LoginOutcome.SUCCESS, cookie=_extract_auth_cookie(http), message="Login successful.")
@@ -334,7 +345,14 @@ async def login(
             )
 
         if outcome == LoginOutcome.BAD_CREDENTIALS:
-            return LoginResult(LoginOutcome.BAD_CREDENTIALS, message="Invalid email or password.")
+            return LoginResult(
+                LoginOutcome.BAD_CREDENTIALS,
+                message=(
+                    "TrainingPeaks rejected the sign-in. Double-check your username and password. "
+                    "If they work in your browser, TrainingPeaks is likely blocking automated "
+                    "sign-in — use the cookie option below."
+                ),
+            )
 
         return LoginResult(
             LoginOutcome.UNKNOWN,
