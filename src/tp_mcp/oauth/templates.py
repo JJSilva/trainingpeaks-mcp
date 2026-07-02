@@ -31,6 +31,9 @@ button:hover { background: #1d4ed8; }
 details { margin-top: 18px; border-top: 1px solid #334155; padding-top: 14px; }
 summary { cursor: pointer; color: #94a3b8; font-size: .82rem; }
 .hint { color: #64748b; font-size: .75rem; margin-top: 6px; line-height: 1.4; }
+ol.steps { margin: 14px 0 0; padding-left: 20px; }
+ol.steps li { margin-bottom: 6px; }
+code { background: #0f172a; padding: 1px 5px; border-radius: 4px; font-size: .72rem; }
 """
 
 
@@ -48,27 +51,32 @@ def login_page(login_session: str, error: str | None = None) -> str:
     body = f"""
     <div class="card">
       <h1>Connect TrainingPeaks</h1>
-      <p class="sub">Sign in with your TrainingPeaks account to authorize this app.</p>
+      <p class="sub">Paste your TrainingPeaks session cookie to authorize this app.</p>
       {err}
       <form method="post" action="/tp-login">
         <input type="hidden" name="login_session" value="{ls}">
-        <label for="username">Username or email</label>
-        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none"
-               autocorrect="off" spellcheck="false" required>
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-        <button type="submit">Sign in</button>
+        <label for="cookie">Production_tpAuth cookie</label>
+        <input id="cookie" name="cookie" type="password" autocomplete="off" required>
+        <button type="submit">Connect</button>
       </form>
+      <ol class="hint steps">
+        <li>Open <strong>app.trainingpeaks.com</strong> in your browser (logged in).</li>
+        <li>Open DevTools (F12) &rarr; <strong>Application</strong> &rarr; <strong>Cookies</strong>
+            &rarr; <code>app.trainingpeaks.com</code>.</li>
+        <li>Copy the value of the <code>Production_tpAuth</code> cookie and paste it above.</li>
+      </ol>
       <details>
-        <summary>Can't sign in? Paste a cookie instead</summary>
-        <p class="hint">If sign-in is blocked (e.g. a CAPTCHA), log in at
-          app.trainingpeaks.com, open DevTools &rarr; Application &rarr; Cookies, and
-          copy the <code>Production_tpAuth</code> value.</p>
+        <summary>Or sign in with username &amp; password</summary>
+        <p class="hint">Works only if TrainingPeaks doesn't flag the sign-in as automated
+          (a CAPTCHA or bot check will block it &mdash; use the cookie above if so).</p>
         <form method="post" action="/tp-login">
           <input type="hidden" name="login_session" value="{ls}">
-          <label for="cookie">Production_tpAuth cookie</label>
-          <input id="cookie" name="cookie" type="password" autocomplete="off">
-          <button type="submit">Use cookie</button>
+          <label for="username">Username or email</label>
+          <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none"
+                 autocorrect="off" spellcheck="false">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password">
+          <button type="submit">Sign in</button>
         </form>
       </details>
     </div>
