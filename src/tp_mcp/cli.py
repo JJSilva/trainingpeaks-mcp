@@ -46,10 +46,10 @@ def _finalize_cookie(cookie: str) -> int:
 
 async def _password_login() -> str | None:
     """Interactive email/password (+ MFA) login. Returns a cookie or None."""
-    email = input("TrainingPeaks email: ").strip()
+    username = input("TrainingPeaks username or email: ").strip()
     password = getpass.getpass("Password (hidden): ")
 
-    result = await tpl.login(email, password)
+    result = await tpl.login(username, password)
 
     if result.outcome == tpl.LoginOutcome.MFA_REQUIRED and result.mfa_state:
         methods = result.mfa_state.available_methods

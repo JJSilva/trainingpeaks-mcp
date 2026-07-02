@@ -89,9 +89,9 @@ def build_login_routes(provider: TPOAuthProvider, config: OAuthConfig) -> list[R
         if cookie:
             return await _complete(login_session, cookie)
 
-        email = str(form.get("email", "")).strip()
+        username = str(form.get("username", "")).strip()
         password = str(form.get("password", ""))
-        result = await tpl.login(email, password)
+        result = await tpl.login(username, password)
 
         if result.outcome == tpl.LoginOutcome.SUCCESS and result.cookie:
             return await _complete(login_session, result.cookie)

@@ -52,8 +52,9 @@ def login_page(login_session: str, error: str | None = None) -> str:
       {err}
       <form method="post" action="/tp-login">
         <input type="hidden" name="login_session" value="{ls}">
-        <label for="email">Email</label>
-        <input id="email" name="email" type="email" autocomplete="username" required>
+        <label for="username">Username or email</label>
+        <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none"
+               autocorrect="off" spellcheck="false" required>
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required>
         <button type="submit">Sign in</button>
