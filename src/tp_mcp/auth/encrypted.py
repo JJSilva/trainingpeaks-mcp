@@ -78,6 +78,25 @@ def _get_machine_id() -> bytes:
 _KDF_ITERATIONS = 600_000
 
 
+def _env_key() -> bytes | None:
+    """Return a server-provided 32-byte key from ``TP_MCP_ENC_KEY`` if set.
+
+    On ephemeral/hosted hosts the machine-id binding is unstable across redeploys,
+    so a deployment can pin a stable base64-encoded 32-byte key via the
+    ``TP_MCP_ENC_KEY`` environment variable. Only used by the multi-user store's
+    blob helpers; the local file store keeps machine-id binding unless a password
+    is supplied.
+    """
+    raw = os.environ.get("TP_MCP_ENC_KEY")
+    if not raw:
+        return None
+    try:
+        key = base64.b64decode(raw)
+    except Exception:
+        return None
+    return key if len(key) == 32 else None
+
+
 def _derive_key(password: str | None = None) -> bytes:
     """Derive an encryption key using PBKDF2-HMAC-SHA256.
 
@@ -98,6 +117,41 @@ def _derive_key(password: str | None = None) -> bytes:
         iterations=_KDF_ITERATIONS,
     )
     return kdf.derive(key_material)
+
+
+def encrypt_blob(plaintext: str, key: bytes | None = None) -> bytes:
+    """Encrypt a string with AES-256-GCM, returning ``nonce || ciphertext``.
+
+    Args:
+        plaintext: The value to encrypt.
+        key: Optional 32-byte key. Defaults to ``TP_MCP_ENC_KEY`` if set, else the
+            machine-derived key.
+
+    Returns:
+        Raw bytes of ``nonce (12) || ciphertext`` (not base64-encoded).
+    """
+    if key is None:
+        key = _env_key() or _derive_key()
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return nonce + ciphertext
+
+
+def decrypt_blob(blob: bytes, key: bytes | None = None) -> str:
+    """Decrypt bytes produced by :func:`encrypt_blob`.
+
+    Args:
+        blob: Raw ``nonce || ciphertext`` bytes.
+        key: Optional 32-byte key. Defaults to ``TP_MCP_ENC_KEY`` if set, else the
+            machine-derived key.
+
+    Returns:
+        The decrypted string.
+    """
+    if key is None:
+        key = _env_key() or _derive_key()
+    nonce, ciphertext = blob[:12], blob[12:]
+    return AESGCM(key).decrypt(nonce, ciphertext, None).decode("utf-8")
 
 
 def _derive_key_legacy(password: str | None = None) -> bytes:
@@ -163,15 +217,9 @@ class EncryptedCredentialStore:
         try:
             _ensure_secure_directory()
 
-            # Generate a random nonce (12 bytes for GCM)
-            nonce = os.urandom(12)
-
-            # Encrypt the cookie
-            aesgcm = AESGCM(self._key)
-            ciphertext = aesgcm.encrypt(nonce, cookie.strip().encode("utf-8"), None)
-
-            # Store nonce + ciphertext, base64 encoded
-            encrypted_data = base64.b64encode(nonce + ciphertext)
+            # Store nonce + ciphertext, base64 encoded (uses this store's key,
+            # not the env/machine default, to preserve password-bound behavior).
+            encrypted_data = base64.b64encode(encrypt_blob(cookie.strip(), self._key))
             CREDENTIALS_FILE.write_bytes(encrypted_data)
 
             _set_file_permissions(CREDENTIALS_FILE)
@@ -194,21 +242,17 @@ class EncryptedCredentialStore:
             return CredentialResult(success=False, message="No credential file found")
 
         encrypted_data = base64.b64decode(CREDENTIALS_FILE.read_bytes())
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
 
         # Try new key first
         try:
-            aesgcm = AESGCM(self._key)
-            cookie = aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
+            cookie = decrypt_blob(encrypted_data, self._key)
             return CredentialResult(success=True, message="Credential retrieved", cookie=cookie)
         except Exception:
             pass
 
         # Fall back to legacy key and auto-migrate
         try:
-            aesgcm = AESGCM(self._legacy_key)
-            cookie = aesgcm.decrypt(nonce, ciphertext, None).decode("utf-8")
+            cookie = decrypt_blob(encrypted_data, self._legacy_key)
             self.store(cookie)  # Re-encrypt with new key
             return CredentialResult(
                 success=True,

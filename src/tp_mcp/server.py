@@ -14,7 +14,7 @@ from mcp.types import (
 )
 
 from tp_mcp.auth import get_credential, validate_auth
-from tp_mcp.client.context import athlete_override
+from tp_mcp.client.context import athlete_override, current_subject
 from tp_mcp.tools import (
     tp_add_note_comment,
     tp_add_workout_comment,
@@ -1402,6 +1402,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     # Extract athlete targeting for coach accounts and set context var
     athlete_target = arguments.pop("athlete", None)
     token = athlete_override.set(athlete_target)
+
+    # In hosted OAuth mode, bind this request to the authenticated subject so the
+    # credential + client caches resolve to that user. No-op for stdio/local.
+    subject_token = current_subject.set(_current_subject())
     try:
         handler = _TOOL_HANDLERS.get(name)
         if handler:
@@ -1425,6 +1429,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(error_result, indent=2))]
     finally:
         athlete_override.reset(token)
+        current_subject.reset(subject_token)
+
+
+def _current_subject() -> str | None:
+    """Resolve the OAuth subject for the current request, if any.
+
+    Reads the validated access token set by the HTTP bearer-auth middleware. In
+    stdio/local mode there is no auth context, so this returns None and the
+    single-user credential path is used.
+    """
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+    except Exception:
+        return None
+    access = get_access_token()
+    return access.subject if access else None
 
 
 async def _validate_auth_on_startup() -> bool:

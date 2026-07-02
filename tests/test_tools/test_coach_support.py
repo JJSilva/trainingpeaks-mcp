@@ -1,12 +1,11 @@
 """Tests for coach account support: context var, ensure_athlete_id, schema injection."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from tp_mcp.client.context import athlete_override
 from tp_mcp.client.http import TPClient
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -83,12 +82,26 @@ SOLO_USER_DATA = {
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
-    """Reset class-level caches between tests."""
-    TPClient._cached_athlete_id = None
-    TPClient._cached_user_data = None
+    """Reset per-subject caches between tests."""
+    TPClient._identity_caches.clear()
     yield
-    TPClient._cached_athlete_id = None
-    TPClient._cached_user_data = None
+    TPClient._identity_caches.clear()
+
+
+def _set_default_athlete_cache(value):
+    """Prime the default (single-user) subject's cached athlete id."""
+    from tp_mcp.client.http import _DEFAULT_SUBJECT, _IdentityCache
+
+    cache = TPClient._identity_caches.setdefault(_DEFAULT_SUBJECT, _IdentityCache())
+    cache.athlete_id = value
+
+
+def _get_default_athlete_cache():
+    """Read the default subject's cached athlete id (None if unset)."""
+    from tp_mcp.client.http import _DEFAULT_SUBJECT
+
+    cache = TPClient._identity_caches.get(_DEFAULT_SUBJECT)
+    return cache.athlete_id if cache else None
 
 
 def _mock_client(user_data):
@@ -138,7 +151,7 @@ class TestEnsureAthleteIdNoOverride:
     async def test_caches_when_no_override(self):
         client = _mock_client(COACH_USER_DATA)
         await client.ensure_athlete_id()
-        assert TPClient._cached_athlete_id == 100
+        assert _get_default_athlete_cache() == 100
 
     @pytest.mark.asyncio
     async def test_uses_cache_on_second_call(self):
@@ -146,7 +159,7 @@ class TestEnsureAthleteIdNoOverride:
         await client.ensure_athlete_id()
         # Second call should use cache, not call _get_user_data again
         client2 = _mock_client(COACH_USER_DATA)
-        TPClient._cached_athlete_id = 100  # simulate cache from first call
+        _set_default_athlete_cache(100)  # simulate cache from first call
         aid = await client2.ensure_athlete_id()
         assert aid == 100
         client2._get_user_data.assert_not_called()
@@ -225,7 +238,7 @@ class TestEnsureAthleteIdNameOverride:
         token = athlete_override.set("Charlotte Horton")
         try:
             await client.ensure_athlete_id()
-            assert TPClient._cached_athlete_id is None
+            assert _get_default_athlete_cache() is None
         finally:
             athlete_override.reset(token)
 
@@ -293,8 +306,8 @@ class TestEnsureAthleteIdIdOverride:
 class TestCacheBypass:
     @pytest.mark.asyncio
     async def test_bypasses_cache_with_override(self):
-        """Even if class cache is set, override should re-resolve from user data."""
-        TPClient._cached_athlete_id = 100
+        """Even if the cache is set, override should re-resolve from user data."""
+        _set_default_athlete_cache(100)
         client = _mock_client(COACH_USER_DATA)
         token = athlete_override.set("Charlotte Horton")
         try:
@@ -312,7 +325,7 @@ class TestCacheBypass:
 
 class TestSchemaInjection:
     def test_non_exempt_tools_have_athlete_param(self):
-        from tp_mcp.server import TOOLS, _ATHLETE_EXEMPT_TOOLS
+        from tp_mcp.server import _ATHLETE_EXEMPT_TOOLS, TOOLS
         for tool in TOOLS:
             if tool.name not in _ATHLETE_EXEMPT_TOOLS:
                 assert "athlete" in tool.inputSchema["properties"], (
@@ -320,7 +333,7 @@ class TestSchemaInjection:
                 )
 
     def test_exempt_tools_lack_athlete_param(self):
-        from tp_mcp.server import TOOLS, _ATHLETE_EXEMPT_TOOLS
+        from tp_mcp.server import _ATHLETE_EXEMPT_TOOLS, TOOLS
         for tool in TOOLS:
             if tool.name in _ATHLETE_EXEMPT_TOOLS:
                 assert "athlete" not in tool.inputSchema["properties"], (

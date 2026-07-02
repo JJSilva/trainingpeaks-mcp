@@ -71,6 +71,17 @@ def get_credential() -> CredentialResult:
     Returns:
         CredentialResult with cookie if found.
     """
+    # Multi-user path: when a request is authenticated as a specific OAuth
+    # subject, use that user's stored TrainingPeaks cookie. Imported lazily to
+    # avoid a client<->auth import cycle.
+    from tp_mcp.client.context import current_subject
+
+    subject = current_subject.get()
+    if subject is not None:
+        from tp_mcp.auth.multiuser_store import get_user_cookie
+
+        return get_user_cookie(subject)
+
     # Check environment variable first (CI/testing override)
     env_cookie = os.environ.get(ENV_VAR_NAME)
     if env_cookie:

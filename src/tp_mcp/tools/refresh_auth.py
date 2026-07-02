@@ -36,6 +36,9 @@ async def tp_refresh_auth(browser: str = "auto") -> dict[str, Any]:
     This tool tries to automatically extract a fresh cookie from the user's browser.
     Requires the user to be logged into TrainingPeaks in their browser.
 
+    In hosted (multi-user OAuth) mode there is no local browser to read, so this
+    returns guidance to re-run the sign-in flow instead.
+
     Args:
         browser: Browser to extract from. Options: chrome, firefox, safari, edge, auto.
                  Use 'auto' to try all browsers.
@@ -43,7 +46,20 @@ async def tp_refresh_auth(browser: str = "auto") -> dict[str, Any]:
     Returns:
         Dict with success status and message.
     """
-    # Try to extract cookie from browser
+    # Hosted/multi-user: the server can't read a remote user's browser.
+    from tp_mcp.client.context import current_subject
+
+    if current_subject.get() is not None:
+        return {
+            "success": False,
+            "message": "Session expired or invalid",
+            "action_needed": (
+                "Reconnect this MCP server from your client and sign in with your "
+                "TrainingPeaks account again to refresh access."
+            ),
+        }
+
+    # Try to extract cookie from browser (local/stdio only)
     result = extract_tp_cookie(browser if browser != "auto" else None)
 
     if not result.success:

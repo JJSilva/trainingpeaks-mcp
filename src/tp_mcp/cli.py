@@ -1,5 +1,6 @@
 """CLI commands for TrainingPeaks MCP Server."""
 
+import asyncio
 import getpass
 import sys
 
@@ -12,83 +13,15 @@ from tp_mcp.auth import (
     store_credential,
     validate_auth_sync,
 )
+from tp_mcp.auth import tp_login as tpl
 from tp_mcp.auth.browser import extract_tp_cookie
 
 
-def cmd_auth(from_browser: str | None = None) -> int:
-    """Interactive authentication flow.
-
-    Args:
-        from_browser: Browser to extract cookie from (chrome, firefox, etc.)
-                      If None, prompts for manual cookie input.
-
-    Returns:
-        Exit code (0 for success, 1 for failure).
-    """
-    print("TrainingPeaks MCP Authentication")
-    print("=" * 40)
-    print()
-
-    # Check if keyring is available
-    if not is_keyring_available():
-        print("Warning: No system keyring available.")
-        print("Cookie will be stored in an encrypted file.")
-        print()
-
-    # Check for existing credential
-    existing = get_credential()
-    if existing.success and existing.cookie:
-        print("Existing credential found. Validating...")
-        result = validate_auth_sync(existing.cookie)
-        if result.is_valid:
-            print(f"Already authenticated as: {result.email}")
-            print(f"Athlete ID: {result.athlete_id}")
-            print()
-            if not from_browser:
-                response = input("Re-authenticate? [y/N]: ").strip().lower()
-                if response != "y":
-                    return 0
-
-    # Get cookie from browser or manual input
-    if from_browser:
-        print(f"Extracting cookie from {from_browser}...")
-        browser_result = extract_tp_cookie(from_browser if from_browser != "auto" else None)
-        if not browser_result.success:
-            print(f"Error: {browser_result.message}")
-            return 1
-        cookie = browser_result.cookie
-        print(f"Found cookie in {browser_result.browser}")
-    else:
-        print()
-        print("To authenticate, you need the Production_tpAuth cookie from TrainingPeaks.")
-        print()
-        print("Steps:")
-        print("1. Log into TrainingPeaks in your browser")
-        print("2. Go to app.trainingpeaks.com")
-        print("3. Open DevTools (F12) -> Application tab -> Cookies")
-        print("4. Find 'Production_tpAuth' cookie")
-        print("5. Copy the cookie value")
-        print()
-        print("Or use: tp-mcp auth --from-browser chrome")
-        print()
-
-        # Get cookie from user (use getpass to hide input)
-        try:
-            cookie = getpass.getpass("Paste cookie value (hidden): ")
-        except (KeyboardInterrupt, EOFError):
-            print("\nCancelled.")
-            return 1
-
-        if not cookie.strip():
-            print("Error: No cookie provided.")
-            return 1
-
+def _finalize_cookie(cookie: str) -> int:
+    """Validate and store a cookie; print a summary. Returns an exit code."""
     print()
     print("Validating...")
-
-    # Validate the cookie
     result = validate_auth_sync(cookie)
-
     if not result.is_valid:
         print(f"Error: {result.message}")
         if result.status == AuthStatus.EXPIRED:
@@ -97,7 +30,6 @@ def cmd_auth(from_browser: str | None = None) -> int:
             print("The cookie appears to be invalid. Check that you copied it correctly.")
         return 1
 
-    # Store the credential
     store_result = store_credential(cookie)
     if not store_result.success:
         print(f"Error storing credential: {store_result.message}")
@@ -109,8 +41,95 @@ def cmd_auth(from_browser: str | None = None) -> int:
     print(f"  Athlete ID: {result.athlete_id}")
     print()
     print("You can now use 'tp-mcp serve' to start the MCP server.")
-
     return 0
+
+
+async def _password_login() -> str | None:
+    """Interactive email/password (+ MFA) login. Returns a cookie or None."""
+    email = input("TrainingPeaks email: ").strip()
+    password = getpass.getpass("Password (hidden): ")
+
+    result = await tpl.login(email, password)
+
+    if result.outcome == tpl.LoginOutcome.MFA_REQUIRED and result.mfa_state:
+        methods = result.mfa_state.available_methods
+        if methods:
+            print(f"Multi-factor authentication required (methods: {', '.join(methods)}).")
+        else:
+            print("Multi-factor authentication required.")
+        code = getpass.getpass("Enter verification code (hidden): ")
+        result = await tpl.submit_mfa(result.mfa_state, code)
+
+    if result.outcome == tpl.LoginOutcome.SUCCESS and result.cookie:
+        return result.cookie
+
+    print(f"Error: {result.message}")
+    if result.outcome == tpl.LoginOutcome.CAPTCHA_REQUIRED:
+        print("Tip: use 'tp-mcp auth --paste' after copying the cookie from your browser.")
+    return None
+
+
+def cmd_auth(from_browser: str | None = None, paste: bool = False) -> int:
+    """Interactive authentication flow.
+
+    Default: email/password (+ MFA) sign-in via TrainingPeaks. Legacy modes:
+    ``--from-browser`` extracts the cookie from a local browser; ``--paste``
+    accepts a manually copied cookie.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    print("TrainingPeaks MCP Authentication")
+    print("=" * 40)
+    print()
+
+    if not is_keyring_available():
+        print("Warning: No system keyring available.")
+        print("Cookie will be stored in an encrypted file.")
+        print()
+
+    # Check for an existing valid credential first.
+    existing = get_credential()
+    if existing.success and existing.cookie:
+        result = validate_auth_sync(existing.cookie)
+        if result.is_valid:
+            print(f"Already authenticated as: {result.email} (athlete {result.athlete_id})")
+            if input("Re-authenticate? [y/N]: ").strip().lower() != "y":
+                return 0
+
+    # Legacy: extract from browser.
+    if from_browser:
+        print(f"Extracting cookie from {from_browser}... (legacy mode)")
+        browser_result = extract_tp_cookie(from_browser if from_browser != "auto" else None)
+        if not browser_result.success:
+            print(f"Error: {browser_result.message}")
+            return 1
+        print(f"Found cookie in {browser_result.browser}")
+        return _finalize_cookie(browser_result.cookie)
+
+    # Legacy: manual cookie paste.
+    if paste:
+        print("Paste the Production_tpAuth cookie from your browser (legacy mode).")
+        print("  app.trainingpeaks.com -> DevTools (F12) -> Application -> Cookies")
+        try:
+            cookie = getpass.getpass("Paste cookie value (hidden): ")
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return 1
+        if not cookie.strip():
+            print("Error: No cookie provided.")
+            return 1
+        return _finalize_cookie(cookie.strip())
+
+    # Default: email/password (+ MFA) sign-in.
+    try:
+        login_cookie = asyncio.run(_password_login())
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return 1
+    if not login_cookie:
+        return 1
+    return _finalize_cookie(login_cookie)
 
 
 def cmd_auth_status() -> int:
@@ -219,8 +238,9 @@ def cmd_help() -> int:
     print("Usage: tp-mcp <command> [options]")
     print()
     print("Commands:")
-    print("  auth                  Authenticate with TrainingPeaks")
-    print("    --from-browser X    Extract cookie from browser (chrome, firefox, safari, edge, auto)")
+    print("  auth                  Sign in with your TrainingPeaks email & password (+ MFA)")
+    print("    --from-browser X    Legacy: extract cookie from browser (chrome, firefox, safari, edge, auto)")
+    print("    --paste             Legacy: paste a Production_tpAuth cookie manually")
     print("  auth-status           Check authentication status")
     print("  auth-clear            Clear stored cookie")
     print("  config                Output Claude Desktop config snippet")
@@ -229,9 +249,12 @@ def cmd_help() -> int:
     print("  help                  Show this help message")
     print()
     print("Examples:")
-    print("  tp-mcp auth                      # Manual cookie entry")
+    print("  tp-mcp auth                      # Email/password sign-in")
+    print("  tp-mcp auth --paste              # Paste a cookie (if sign-in is blocked)")
     print("  tp-mcp auth --from-browser auto  # Auto-detect browser")
-    print("  tp-mcp auth --from-browser chrome")
+    print()
+    print("Hosted (HTTP) sign-in env vars: TP_MCP_PUBLIC_URL, TP_MCP_TOKEN_SECRET,")
+    print("  TP_MCP_DB_PATH, TP_MCP_ENC_KEY (see DEPLOY_RAILWAY.md).")
     print()
     return 0
 
@@ -247,10 +270,11 @@ def main() -> int:
 
     command = sys.argv[1].lower()
 
-    # Handle auth command with optional --from-browser flag
+    # Handle auth command with optional --from-browser / --paste flags
     if command == "auth":
         from_browser = None
         args = sys.argv[2:]
+        paste = "--paste" in args
         if "--from-browser" in args:
             idx = args.index("--from-browser")
             if idx + 1 < len(args):
@@ -258,7 +282,7 @@ def main() -> int:
             else:
                 print("Error: --from-browser requires a browser name (chrome, firefox, auto, etc.)")
                 return 1
-        return cmd_auth(from_browser=from_browser)
+        return cmd_auth(from_browser=from_browser, paste=paste)
 
     commands = {
         "auth-status": cmd_auth_status,

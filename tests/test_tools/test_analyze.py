@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from tp_mcp.client.http import APIResponse
-from tp_mcp.client.models import WorkoutAnalysis, parse_workout_analysis
-from tp_mcp.tools.analyze import ANALYSIS_DATA_DIR, tp_analyze_workout
+from tp_mcp.client.models import parse_workout_analysis
+from tp_mcp.tools.analyze import tp_analyze_workout
 
 TEST_ATHLETE_ID = 123456
 TEST_ACCESS_TOKEN = "gAAAA_test_access_token_12345"
@@ -22,10 +22,7 @@ def _mock_tp_client(athlete_id=TEST_ATHLETE_ID):
     mock_client._ensure_access_token = AsyncMock(
         return_value=APIResponse(success=True)
     )
-
-    mock_token_cache = MagicMock()
-    mock_token_cache.access_token = TEST_ACCESS_TOKEN
-    mock_client._token_cache = mock_token_cache
+    mock_client.current_access_token = AsyncMock(return_value=TEST_ACCESS_TOKEN)
 
     return mock_client
 
@@ -147,10 +144,7 @@ class TestTpAnalyzeWorkout:
         mock_client._ensure_access_token = AsyncMock(
             return_value=APIResponse(success=True)
         )
-
-        mock_token_cache = MagicMock()
-        mock_token_cache.access_token = None
-        mock_client._token_cache = mock_token_cache
+        mock_client.current_access_token = AsyncMock(return_value=None)
 
         with patch("tp_mcp.tools.analyze.TPClient") as mock_tp:
             mock_tp.return_value.__aenter__.return_value = mock_client

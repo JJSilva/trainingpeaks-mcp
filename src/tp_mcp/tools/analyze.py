@@ -72,7 +72,7 @@ async def tp_analyze_workout(workout_id: str) -> dict[str, Any]:
                 "message": token_result.message or "Failed to obtain access token.",
             }
 
-        access_token = client._token_cache.access_token
+        access_token = await client.current_access_token()
         if not access_token:
             return {
                 "isError": True,

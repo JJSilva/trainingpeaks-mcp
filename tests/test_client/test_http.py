@@ -71,24 +71,33 @@ class TestThrottling:
         assert client._last_request_time == 0.0
 
 
+async def _default_athlete_id() -> int | None:
+    """Read the athlete id cached for the default (single-user) subject."""
+    from tp_mcp.client.http import _DEFAULT_SUBJECT
+
+    cache = TPClient._identity_caches.get(_DEFAULT_SUBJECT)
+    return cache.athlete_id if cache else None
+
+
 class TestEnsureAthleteId:
     """Tests for athlete ID caching via ensure_athlete_id."""
 
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
-        """Reset class-level caches between tests."""
-        TPClient._cached_athlete_id = None
-        TPClient._cached_user_data = None
-        TPClient._shared_token_cache = None
+        """Reset per-subject caches between tests."""
+        TPClient._identity_caches.clear()
         yield
-        TPClient._cached_athlete_id = None
-        TPClient._cached_user_data = None
-        TPClient._shared_token_cache = None
+        TPClient._identity_caches.clear()
 
     @pytest.mark.asyncio
-    async def test_returns_cached_class_level_value(self):
-        """Should return class-level cached athlete ID without API call."""
-        TPClient._cached_athlete_id = 999
+    async def test_returns_cached_value(self):
+        """Should return the per-subject cached athlete ID without an API call."""
+        from tp_mcp.client.http import _DEFAULT_SUBJECT, _IdentityCache
+
+        cache = _IdentityCache()
+        cache.athlete_id = 999
+        TPClient._identity_caches[_DEFAULT_SUBJECT] = cache
+
         client = TPClient()
         client.get = AsyncMock()  # should not be called
 
@@ -99,14 +108,14 @@ class TestEnsureAthleteId:
 
     @pytest.mark.asyncio
     async def test_fetches_from_api_and_caches(self):
-        """Should fetch athlete ID from API and cache at class level."""
+        """Should fetch athlete ID from API and cache it per subject."""
         client = TPClient()
         client.get = AsyncMock(return_value=APIResponse(success=True, data={"user": {"personId": 42}}))
 
         result = await client.ensure_athlete_id()
 
         assert result == 42
-        assert TPClient._cached_athlete_id == 42
+        assert await _default_athlete_id() == 42
         assert client.athlete_id == 42
 
     @pytest.mark.asyncio
@@ -123,7 +132,7 @@ class TestEnsureAthleteId:
         result = await client.ensure_athlete_id()
 
         assert result == 77
-        assert TPClient._cached_athlete_id == 77
+        assert await _default_athlete_id() == 77
 
     @pytest.mark.asyncio
     async def test_returns_none_on_api_failure(self):
@@ -134,16 +143,16 @@ class TestEnsureAthleteId:
         result = await client.ensure_athlete_id()
 
         assert result is None
-        assert TPClient._cached_athlete_id is None
+        assert await _default_athlete_id() is None
 
     @pytest.mark.asyncio
-    async def test_class_cache_persists_across_instances(self):
-        """Class-level cache should persist across TPClient instances."""
+    async def test_cache_persists_across_instances(self):
+        """Per-subject cache should persist across TPClient instances."""
         client1 = TPClient()
         client1.get = AsyncMock(return_value=APIResponse(success=True, data={"user": {"personId": 123}}))
         await client1.ensure_athlete_id()
 
-        # Second instance should use cached value without API call
+        # Second instance should use the cached value without an API call
         client2 = TPClient()
         client2.get = AsyncMock()
 
@@ -165,27 +174,53 @@ class TestEnsureAthleteId:
         client.get.assert_not_called()
 
 
-class TestSharedTokenCache:
-    """Tests for shared TokenCache across TPClient instances."""
+class TestPerSubjectCache:
+    """Tests for per-subject cache isolation (multi-user safety)."""
 
     @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        """Reset shared token cache between tests."""
-        TPClient._shared_token_cache = None
+    def _clear_cache(self):
+        TPClient._identity_caches.clear()
         yield
-        TPClient._shared_token_cache = None
+        TPClient._identity_caches.clear()
 
-    def test_token_cache_shared_across_instances(self):
-        """Multiple TPClient instances should share the same TokenCache."""
-        client1 = TPClient()
-        client2 = TPClient()
-        assert client1._token_cache is client2._token_cache
+    @pytest.mark.asyncio
+    async def test_same_subject_shares_cache(self):
+        """Two instances resolve the same identity cache for the same subject."""
+        c1 = await TPClient._get_identity_cache()
+        c2 = await TPClient._get_identity_cache()
+        assert c1 is c2
 
-    def test_token_cache_lazily_created(self):
-        """Shared cache should be None until first TPClient is created."""
-        assert TPClient._shared_token_cache is None
-        TPClient()
-        assert TPClient._shared_token_cache is not None
+    @pytest.mark.asyncio
+    async def test_different_subjects_isolated(self):
+        """Different subjects must get distinct token/athlete caches (no leakage)."""
+        from tp_mcp.client.context import current_subject
+
+        tok_a = current_subject.set("subject-A")
+        cache_a = await TPClient._get_identity_cache()
+        cache_a.athlete_id = 111
+        cache_a.token_cache.access_token = "token-A"
+        current_subject.reset(tok_a)
+
+        tok_b = current_subject.set("subject-B")
+        cache_b = await TPClient._get_identity_cache()
+        current_subject.reset(tok_b)
+
+        assert cache_a is not cache_b
+        assert cache_b.athlete_id is None
+        assert cache_b.token_cache.access_token is None
+
+    @pytest.mark.asyncio
+    async def test_invalidate_subject(self):
+        """invalidate_subject drops that subject's cache."""
+        from tp_mcp.client.context import current_subject
+
+        tok = current_subject.set("subject-C")
+        cache = await TPClient._get_identity_cache()
+        cache.athlete_id = 7
+        TPClient.invalidate_subject("subject-C")
+        fresh = await TPClient._get_identity_cache()
+        current_subject.reset(tok)
+        assert fresh.athlete_id is None
 
 
 class TestHandleResponse:

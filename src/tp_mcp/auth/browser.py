@@ -1,5 +1,10 @@
 """Browser cookie extraction for TrainingPeaks authentication.
 
+LEGACY: the primary sign-in path is now email/password via
+``tp_mcp.auth.tp_login`` (used by ``tp-mcp auth`` and the hosted OAuth login
+page). Browser extraction remains for the opt-in ``tp-mcp auth --from-browser``
+flag and the ``[browser]`` extra.
+
 SECURITY NOTES:
 - Domain is HARDCODED to .trainingpeaks.com - cannot be changed via parameters
 - Cookie name is HARDCODED to Production_tpAuth - cannot be changed via parameters

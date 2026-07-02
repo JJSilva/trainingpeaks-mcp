@@ -106,23 +106,69 @@ class TokenCache:
         self.expires_at = 0.0
 
 
+# Sentinel key for the single-user / local (subject is None) case.
+_DEFAULT_SUBJECT = "__default__"
+
+
+@dataclass
+class _IdentityCache:
+    """All per-subject cached state. One instance per distinct OAuth subject.
+
+    Isolating this per subject is what makes the server safe for multiple users:
+    one user's access token / athlete id / profile can never be served to another.
+    """
+
+    token_cache: TokenCache = field(default_factory=TokenCache)
+    athlete_id: int | None = None
+    user_data: dict | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+
 class TPClient:
     """Async HTTP client for TrainingPeaks API.
 
     Handles authentication, error handling, and response parsing.
     """
 
-    # Class-level caches: persist across instances within the MCP server process
-    _cached_athlete_id: int | None = None
-    _cached_user_data: dict | None = None
-    _shared_token_cache: TokenCache | None = None
+    # Per-subject caches: persist across instances within the MCP server process,
+    # keyed by OAuth subject so different users never share token/athlete state.
+    _identity_caches: dict[str, _IdentityCache] = {}
+    _caches_guard: asyncio.Lock = asyncio.Lock()
+
+    @staticmethod
+    def _subject_key() -> str:
+        """Resolve the cache key for the current request's subject.
+
+        Read at call time (never captured in __init__) so each awaited call maps
+        to the correct user. ``None`` subject -> the single shared default bucket,
+        which reproduces the previous single-user behavior exactly.
+        """
+        from tp_mcp.client.context import current_subject
+
+        return current_subject.get() or _DEFAULT_SUBJECT
 
     @classmethod
-    def _get_token_cache(cls) -> TokenCache:
-        """Get or create the shared token cache."""
-        if cls._shared_token_cache is None:
-            cls._shared_token_cache = TokenCache()
-        return cls._shared_token_cache
+    async def _get_identity_cache(cls) -> _IdentityCache:
+        """Get or create the identity cache for the current subject."""
+        key = cls._subject_key()
+        cache = cls._identity_caches.get(key)
+        if cache is None:
+            async with cls._caches_guard:
+                cache = cls._identity_caches.get(key)
+                if cache is None:
+                    cache = _IdentityCache()
+                    cls._identity_caches[key] = cache
+        return cache
+
+    @classmethod
+    def invalidate_subject(cls, subject: str | None = None) -> None:
+        """Drop cached state for a subject (e.g. after a cookie rotation)."""
+        cls._identity_caches.pop(subject or _DEFAULT_SUBJECT, None)
+
+    async def current_access_token(self) -> str | None:
+        """Return the cached OAuth access token for the current subject, if any."""
+        cache = await self._get_identity_cache()
+        return cache.token_cache.access_token
 
     def __init__(self, timeout: float = DEFAULT_TIMEOUT):
         """Initialize the client.
@@ -135,7 +181,6 @@ class TPClient:
         self._client: httpx.AsyncClient | None = None
         self._athlete_id: int | None = None
         self._last_request_time: float = 0.0
-        self._token_cache = TPClient._get_token_cache()
 
     async def __aenter__(self) -> "TPClient":
         """Enter async context."""
@@ -164,14 +209,17 @@ class TPClient:
             await self._client.aclose()
             self._client = None
 
-    def _get_headers(self) -> dict[str, str]:
+    def _get_headers(self, access_token: str | None) -> dict[str, str]:
         """Get request headers with Bearer token authentication.
+
+        Args:
+            access_token: The current subject's OAuth access token.
 
         Returns:
             Headers dict with Authorization header.
         """
         return {
-            "Authorization": f"Bearer {self._token_cache.access_token}",
+            "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -264,14 +312,17 @@ class TPClient:
         Returns:
             APIResponse indicating success or the error that occurred.
         """
+        cache = await self._get_identity_cache()
+        tc = cache.token_cache
+
         # Fast path: token is still valid
-        if self._token_cache.is_valid():
+        if tc.is_valid():
             return APIResponse(success=True)
 
-        # Slow path: need to refresh
-        async with self._token_cache._lock:
+        # Slow path: need to refresh (per-subject lock)
+        async with tc._lock:
             # Double-check after acquiring lock
-            if self._token_cache.is_valid():
+            if tc.is_valid():
                 return APIResponse(success=True)
 
             # Exchange cookie for token
@@ -281,9 +332,9 @@ class TPClient:
 
             # Cache the token
             token_data = result.data["token"]  # type: ignore[index, call-overload]
-            self._token_cache.access_token = token_data["access_token"]
+            tc.access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 3600)
-            self._token_cache.expires_at = time.time() + expires_in
+            tc.expires_at = time.time() + expires_in
 
             return APIResponse(success=True)
 
@@ -317,8 +368,9 @@ class TPClient:
 
         await self._throttle()
 
+        cache = await self._get_identity_cache()
         url = f"{self.base_url}{endpoint}"
-        headers = self._get_headers()
+        headers = self._get_headers(cache.token_cache.access_token)
 
         try:
             response = await self._client.request(
@@ -332,7 +384,7 @@ class TPClient:
             # Handle 401 with retry logic
             if response.status_code == 401 and _retry_on_401:
                 # Token might have expired mid-request, clear and retry once
-                self._token_cache.clear()
+                cache.token_cache.clear()
                 return await self._request(method, endpoint, json=json, params=params, _retry_on_401=False)
 
             return self._handle_response(response)
@@ -484,14 +536,15 @@ class TPClient:
 
         await self._throttle()
 
+        cache = await self._get_identity_cache()
         url = f"{self.base_url}{endpoint}"
-        headers = {**self._get_headers(), "Accept": "*/*"}
+        headers = {**self._get_headers(cache.token_cache.access_token), "Accept": "*/*"}
 
         try:
             response = await self._client.request("GET", url=url, headers=headers, params=params)
 
             if response.status_code == 401:
-                self._token_cache.clear()
+                cache.token_cache.clear()
                 token_result = await self._ensure_access_token()
                 if not token_result.success:
                     return RawResponse(
@@ -500,7 +553,7 @@ class TPClient:
                         message=token_result.message,
                     )
                 await self._throttle()
-                headers = {**self._get_headers(), "Accept": "*/*"}
+                headers = {**self._get_headers(cache.token_cache.access_token), "Accept": "*/*"}
                 response = await self._client.request("GET", url=url, headers=headers, params=params)
 
         except httpx.TimeoutException:
@@ -553,17 +606,19 @@ class TPClient:
         self._athlete_id = value
 
     async def _get_user_data(self) -> dict | None:
-        """Get user data, using class-level cache to avoid redundant API calls."""
-        if TPClient._cached_user_data is not None:
-            return TPClient._cached_user_data
+        """Get user data, using the per-subject cache to avoid redundant API calls."""
+        cache = await self._get_identity_cache()
+        if cache.user_data is not None:
+            return cache.user_data
 
-        response = await self.get("/users/v3/user")
-        if not response.success or not response.data:
-            return None
-
-        user_data = response.data.get("user", response.data)
-        TPClient._cached_user_data = user_data
-        return user_data
+        async with cache.lock:
+            if cache.user_data is not None:
+                return cache.user_data
+            response = await self.get("/users/v3/user")
+            if not response.success or not response.data:
+                return None
+            cache.user_data = response.data.get("user", response.data)
+            return cache.user_data
 
     async def ensure_athlete_id(self) -> int | None:
         """Get athlete ID, resolving coach athlete targeting via context var.
@@ -572,20 +627,21 @@ class TPClient:
         target a specific athlete by name or ID. When no override is set,
         resolves to the coach's own athlete entry.
 
-        Caches at class level only when no athlete override is active.
+        Caches per subject only when no athlete override is active.
         """
         from tp_mcp.client.context import athlete_override
 
         athlete = athlete_override.get()
+        cache = await self._get_identity_cache()
 
         # Use cache only when no specific athlete is requested
         if athlete is None:
-            if TPClient._cached_athlete_id is not None:
-                self._athlete_id = TPClient._cached_athlete_id
-                return TPClient._cached_athlete_id
+            if cache.athlete_id is not None:
+                self._athlete_id = cache.athlete_id
+                return cache.athlete_id
 
             if self._athlete_id is not None:
-                TPClient._cached_athlete_id = self._athlete_id
+                cache.athlete_id = self._athlete_id
                 return self._athlete_id
 
         user_data = await self._get_user_data()
@@ -650,7 +706,7 @@ class TPClient:
         if athlete_id:
             self._athlete_id = athlete_id
             if athlete is None:
-                TPClient._cached_athlete_id = athlete_id
+                cache.athlete_id = athlete_id
 
         return athlete_id
 

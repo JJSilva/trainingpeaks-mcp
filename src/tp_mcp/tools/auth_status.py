@@ -11,14 +11,23 @@ async def tp_auth_status() -> dict[str, Any]:
     Returns:
         Dict with auth status, athlete_id if valid, and any action needed.
     """
+    from tp_mcp.client.context import current_subject
+
+    is_hosted = current_subject.get() is not None
+    reauth_hint = (
+        "Reconnect and sign in with your TrainingPeaks account"
+        if is_hosted
+        else "Run 'tp-mcp auth' to authenticate"
+    )
+
     cred = get_credential()
 
     if not cred.success or not cred.cookie:
         return {
             "valid": False,
             "athlete_id": None,
-            "message": "No credential stored",
-            "action_needed": "Run 'tp-mcp auth' to authenticate",
+            "message": "No credential for this account" if is_hosted else "No credential stored",
+            "action_needed": reauth_hint,
         }
 
     result = await validate_auth(cred.cookie)
@@ -28,14 +37,14 @@ async def tp_auth_status() -> dict[str, Any]:
             "valid": True,
             "athlete_id": result.athlete_id,
             "email": result.email,
-            "storage": get_storage_backend(),
+            "storage": "oauth" if is_hosted else get_storage_backend(),
             "message": "Authentication valid",
             "action_needed": None,
         }
 
     action_map = {
-        AuthStatus.EXPIRED: "Session expired. Run 'tp-mcp auth' to re-authenticate.",
-        AuthStatus.INVALID: "Invalid credentials. Run 'tp-mcp auth' to re-authenticate.",
+        AuthStatus.EXPIRED: f"Session expired. {reauth_hint}.",
+        AuthStatus.INVALID: f"Invalid credentials. {reauth_hint}.",
         AuthStatus.NETWORK_ERROR: "Network error. Check connection and retry.",
     }
 
@@ -43,5 +52,5 @@ async def tp_auth_status() -> dict[str, Any]:
         "valid": False,
         "athlete_id": None,
         "message": result.message,
-        "action_needed": action_map.get(result.status, "Run 'tp-mcp auth' to authenticate"),
+        "action_needed": action_map.get(result.status, reauth_hint),
     }
