@@ -2,6 +2,7 @@
 
 import json
 import logging
+from copy import deepcopy
 from datetime import date as date_type
 from datetime import datetime as datetime_type
 from typing import Any, Literal, NamedTuple
@@ -17,8 +18,10 @@ from tp_mcp.tools._validation import (
     format_validation_error,
 )
 from tp_mcp.tools.structure import (
+    YARDS_TO_METERS,
     build_wire_structure,
     compute_if_tss,
+    has_distance_steps,
     parse_structure_input,
 )
 
@@ -62,6 +65,16 @@ def _prepare_structure_payload(
     try:
         parsed_structure = parse_structure_input(structure)
         wire_structure = build_wire_structure(parsed_structure)
+        # Distance-based (pool) structures have no time-weighting basis, so we
+        # do not auto-derive duration/IF/TSS — those stay caller-controlled.
+        if has_distance_steps(parsed_structure):
+            return StructurePayload(
+                wire_structure=wire_structure,
+                duration_minutes=None,
+                intensity_factor=None,
+                tss=None,
+                error=None,
+            )
         structure_if, structure_tss, total_seconds = compute_if_tss(parsed_structure)
         return StructurePayload(
             wire_structure=wire_structure,
@@ -95,6 +108,54 @@ def _validate_structured_workout(structured_workout: dict[str, Any]) -> str | No
     return None
 
 
+def _convert_length_units_to_meters(node: Any) -> bool:
+    """Recursively rewrite any yard/yards length units to metres in place.
+
+    The TP API rejects "yard"/"yards" length units (HTTP 400); distance must
+    be stored in metres. Returns True if any yard unit was found (i.e. the
+    caller authored in yards).
+
+    Only ``length`` objects (``{"value", "unit"}``) are converted; rests use
+    "second" and are left untouched.
+    """
+    authored_in_yards = False
+    if isinstance(node, dict):
+        unit = node.get("unit")
+        if isinstance(unit, str) and unit.lower() in ("yard", "yards"):
+            authored_in_yards = True
+            value = node.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                node["value"] = round(value * YARDS_TO_METERS, 2)
+            node["unit"] = "meter"
+        for value in node.values():
+            if _convert_length_units_to_meters(value):
+                authored_in_yards = True
+    elif isinstance(node, list):
+        for item in node:
+            if _convert_length_units_to_meters(item):
+                authored_in_yards = True
+    return authored_in_yards
+
+
+def _sanitize_structured_workout(structured_workout: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a native structured_workout payload for the TP API.
+
+    - Auto-injects ``primaryIntensityTargetOrRange="range"`` if missing.
+    - Rewrites any yard/yards length units to metres (never emits yards).
+    - Sets ``visualizationDistanceUnit="yard"`` when the caller authored in
+      yards and did not already specify a display unit.
+    """
+    sanitized = deepcopy(structured_workout)
+    authored_in_yards = _convert_length_units_to_meters(sanitized)
+
+    if "primaryIntensityTargetOrRange" not in sanitized:
+        sanitized["primaryIntensityTargetOrRange"] = "range"
+    if authored_in_yards and "visualizationDistanceUnit" not in sanitized:
+        sanitized["visualizationDistanceUnit"] = "yard"
+
+    return sanitized
+
+
 def _encode_structured_workout(
     structured_workout: dict[str, Any] | None,
 ) -> tuple[str | None, str | None]:
@@ -102,12 +163,17 @@ def _encode_structured_workout(
     if structured_workout is None:
         return None, None
 
-    error = _validate_structured_workout(structured_workout)
+    if not isinstance(structured_workout, dict):
+        return None, "structured_workout must be a JSON object."
+
+    sanitized = _sanitize_structured_workout(structured_workout)
+
+    error = _validate_structured_workout(sanitized)
     if error:
         return None, error
 
     try:
-        return json.dumps(structured_workout), None
+        return json.dumps(sanitized), None
     except (TypeError, ValueError) as e:
         return None, f"structured_workout must be JSON-serializable: {e}"
 
@@ -406,8 +472,17 @@ async def tp_create_workout(
         description: Optional workout description.
         distance_km: Optional planned distance in kilometres.
         tss_planned: Optional planned Training Stress Score.
-        structure: Optional interval structure (dict or JSON string).
+        structure: Optional interval structure (dict or JSON string). Steps are
+            normally time-based (``duration_seconds``). For pool swims a step
+            may instead be distance-based via ``distance_yards`` or
+            ``distance_meters`` (exactly one length field per step); rests stay
+            time-based. Set ``length_unit`` ("yard"|"meter") on the structure to
+            control the display unit. Yards are converted to metres on the wire
+            and displayed back in yards; TP rejects raw "yard" units.
         structured_workout: Optional native TP structured workout payload.
+            ``primaryIntensityTargetOrRange`` is injected if missing, and any
+            yard length units are converted to metres (with the display unit
+            set to yards).
         subtype_id: Optional workout subtype ID (e.g. Road Bike=3).
         tags: Optional comma-separated tags string.
         feeling: Optional TrainingPeaks feeling value (0-10).
@@ -571,7 +646,10 @@ async def tp_update_workout(
     TP API requires full workout object on PUT - fetches existing, merges, then PUTs.
 
     Supports either simplified ``structure`` input or a native
-    ``structured_workout`` payload, but not both in the same call.
+    ``structured_workout`` payload, but not both in the same call. The
+    simplified ``structure`` accepts distance-based pool-swim steps
+    (``distance_yards``/``distance_meters`` with an optional ``length_unit``
+    hint); see ``tp_create_workout`` for the full distance schema.
 
     Returns:
         Dict with updated workout details or error.

@@ -275,6 +275,225 @@ class TestCreateWorkoutWithStructure:
         assert "structured_workout" in result["message"]
 
 
+class TestCreatePoolSwimWithDistance:
+    """Tests for distance-based (pool) swim creation via simplified structure."""
+
+    @pytest.mark.asyncio
+    async def test_full_pool_set_creates_without_error(self):
+        """200 WU / 20x25 / 14x50 / 400 CD in yards round-trips to a meter wire."""
+        structure = {
+            "length_unit": "yard",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+            "steps": [
+                {"name": "Warm Up", "distance_yards": 200, "intensity_min": 0,
+                 "intensity_max": 0, "intensityClass": "warmUp"},
+                {"type": "repetition", "reps": 20, "steps": [
+                    {"name": "25 free", "distance_yards": 25, "intensity_min": 0, "intensity_max": 0},
+                    {"name": "Rest", "duration_seconds": 15, "intensityClass": "rest",
+                     "intensity_min": 0, "intensity_max": 0},
+                ]},
+                {"type": "repetition", "reps": 14, "steps": [
+                    {"name": "50 free", "distance_yards": 50, "intensity_min": 0, "intensity_max": 0},
+                    {"name": "Rest", "duration_seconds": 20, "intensityClass": "rest",
+                     "intensity_min": 0, "intensity_max": 0},
+                ]},
+                {"name": "Cool Down", "distance_yards": 400, "intensity_min": 0,
+                 "intensity_max": 0, "intensityClass": "coolDown"},
+            ],
+        }
+        create_response = APIResponse(
+            success=True,
+            data={"workoutId": 8001, "title": "Pool Set", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Pool Set",
+                structure=structure,
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        wire = json.loads(payload["structure"])
+        assert wire["primaryLengthMetric"] == "distance"
+        assert wire["primaryIntensityTargetOrRange"] == "range"
+        assert wire["visualizationDistanceUnit"] == "yard"
+        # Never store yards; all lengths must be meter or second.
+        for block in wire["structure"]:
+            for s in block["steps"]:
+                assert s["length"]["unit"] in ("meter", "second")
+        assert "yard" not in json.dumps(wire["structure"]).lower()
+        # No auto duration/TSS/IF derived for distance workouts.
+        assert "totalTimePlanned" not in payload
+        assert "tssPlanned" not in payload
+        assert "ifPlanned" not in payload
+
+    @pytest.mark.asyncio
+    async def test_meter_pool_set_creates(self):
+        """Metre-authored swim stores metres and displays in metres."""
+        structure = {
+            "steps": [
+                {"name": "100m", "distance_meters": 100, "intensity_min": 0, "intensity_max": 0},
+            ],
+        }
+        create_response = APIResponse(
+            success=True, data={"workoutId": 8002, "title": "Meters", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Meters", structure=structure,
+            )
+
+        assert result["success"] is True
+        wire = json.loads(mock_instance.post.call_args[1]["json"]["structure"])
+        assert wire["visualizationDistanceUnit"] == "meter"
+        assert wire["structure"][0]["steps"][0]["length"] == {"value": 100.0, "unit": "meter"}
+
+
+class TestStructuredWorkoutPassthroughSanitization:
+    """Tests for native structured_workout sanitization (rule #4)."""
+
+    @pytest.mark.asyncio
+    async def test_injects_primary_intensity_target_or_range(self):
+        """Missing primaryIntensityTargetOrRange is auto-injected as 'range'."""
+        structured_workout = {
+            "structure": [],
+            "polyline": [],
+            "primaryLengthMetric": "distance",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+        }
+        create_response = APIResponse(
+            success=True, data={"workoutId": 8003, "title": "Raw", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Raw",
+                structured_workout=structured_workout,
+            )
+
+        assert result["success"] is True
+        wire = json.loads(mock_instance.post.call_args[1]["json"]["structure"])
+        assert wire["primaryIntensityTargetOrRange"] == "range"
+
+    @pytest.mark.asyncio
+    async def test_converts_yard_units_and_sets_display_unit(self):
+        """Yard length units in a raw payload are converted to metres."""
+        structured_workout = {
+            "structure": [
+                {"type": "step", "length": {"value": 1, "unit": "repetition"},
+                 "begin": 0, "end": 22.86, "steps": [
+                     {"name": "25 free", "type": "step",
+                      "length": {"value": 25, "unit": "yard"},
+                      "targets": [{"minValue": 0, "maxValue": 0}],
+                      "intensityClass": "active", "openDuration": False},
+                 ]},
+            ],
+            "polyline": [],
+            "primaryLengthMetric": "distance",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+        }
+        create_response = APIResponse(
+            success=True, data={"workoutId": 8004, "title": "Raw Yards", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Raw Yards",
+                structured_workout=structured_workout,
+            )
+
+        assert result["success"] is True
+        wire = json.loads(mock_instance.post.call_args[1]["json"]["structure"])
+        step_length = wire["structure"][0]["steps"][0]["length"]
+        assert step_length["unit"] == "meter"
+        assert step_length["value"] == pytest.approx(22.86)
+        assert wire["visualizationDistanceUnit"] == "yard"
+        assert "yard" not in json.dumps(wire["structure"]).lower()
+
+    @pytest.mark.asyncio
+    async def test_does_not_override_existing_visualization_unit(self):
+        """An explicit visualizationDistanceUnit is preserved."""
+        structured_workout = {
+            "structure": [
+                {"type": "step", "length": {"value": 1, "unit": "repetition"},
+                 "steps": [{"name": "x", "length": {"value": 25, "unit": "yards"}}]},
+            ],
+            "polyline": [],
+            "primaryLengthMetric": "distance",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+            "primaryIntensityTargetOrRange": "range",
+            "visualizationDistanceUnit": "meter",
+        }
+        create_response = APIResponse(
+            success=True, data={"workoutId": 8005, "title": "Keep Unit", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Keep Unit",
+                structured_workout=structured_workout,
+            )
+
+        assert result["success"] is True
+        wire = json.loads(mock_instance.post.call_args[1]["json"]["structure"])
+        assert wire["visualizationDistanceUnit"] == "meter"
+        assert wire["structure"][0]["steps"][0]["length"]["unit"] == "meter"
+
+    @pytest.mark.asyncio
+    async def test_does_not_mutate_caller_dict(self):
+        """Sanitization must not mutate the caller's structured_workout."""
+        structured_workout = {
+            "structure": [{"type": "step", "steps": [{"length": {"value": 25, "unit": "yard"}}]}],
+            "polyline": [],
+            "primaryLengthMetric": "distance",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+        }
+        original = json.loads(json.dumps(structured_workout))
+        create_response = APIResponse(
+            success=True, data={"workoutId": 8006, "title": "Immutable", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            await tp_create_workout(
+                date_str="2026-03-01", sport="Swim", title="Immutable",
+                structured_workout=structured_workout,
+            )
+
+        assert structured_workout == original
+
+
 class TestUpdateWorkout:
     """Tests for tp_update_workout."""
 

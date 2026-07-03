@@ -10,6 +10,7 @@ from tp_mcp.tools.structure import (
     SimpleWorkoutStructure,
     build_wire_structure,
     compute_if_tss,
+    has_distance_steps,
     parse_structure_input,
     tp_validate_structure,
 )
@@ -178,6 +179,190 @@ class TestComputeIFTSS:
         structure = SimpleWorkoutStructure(steps=[step])
         _, _, total = compute_if_tss(structure)
         assert total == 1
+
+
+class TestDistanceSteps:
+    """Test distance-based (pool swim) steps."""
+
+    def test_yard_step_converts_to_meters(self):
+        """A yard work step is stored in metres, never as a yard unit."""
+        step = SimpleStep(
+            name="25 free", distance_yards=25,
+            intensity_min=0, intensity_max=0, intensityClass="active",
+        )
+        structure = SimpleWorkoutStructure(steps=[step])
+        wire = build_wire_structure(structure)
+
+        length = wire["structure"][0]["steps"][0]["length"]
+        assert length["unit"] == "meter"
+        assert length["value"] == pytest.approx(22.86)  # 25 * 0.9144
+
+    def test_common_yard_conversions(self):
+        """Verify the documented yard->meter conversions."""
+        cases = {25: 22.86, 50: 45.72, 100: 91.44, 200: 182.88, 400: 365.76}
+        for yards, meters in cases.items():
+            step = SimpleStep(
+                name=f"{yards}", distance_yards=yards,
+                intensity_min=0, intensity_max=0,
+            )
+            wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+            assert wire["structure"][0]["steps"][0]["length"]["value"] == pytest.approx(meters)
+
+    def test_meter_step_stays_meters(self):
+        step = SimpleStep(
+            name="100m", distance_meters=100,
+            intensity_min=0, intensity_max=0,
+        )
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        length = wire["structure"][0]["steps"][0]["length"]
+        assert length == {"value": 100.0, "unit": "meter"}
+
+    def test_distance_mode_sets_primary_length_metric(self):
+        step = SimpleStep(name="200", distance_yards=200, intensity_min=0, intensity_max=0)
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        assert wire["primaryLengthMetric"] == "distance"
+        assert wire["primaryIntensityTargetOrRange"] == "range"
+
+    def test_visualization_distance_unit_yard(self):
+        """Yard-authored swim displays in yards."""
+        step = SimpleStep(name="200", distance_yards=200, intensity_min=0, intensity_max=0)
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        assert wire["visualizationDistanceUnit"] == "yard"
+
+    def test_visualization_distance_unit_meter(self):
+        """Meter-authored swim displays in metres."""
+        step = SimpleStep(name="200m", distance_meters=200, intensity_min=0, intensity_max=0)
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        assert wire["visualizationDistanceUnit"] == "meter"
+
+    def test_length_unit_hint_overrides_inference(self):
+        """Explicit length_unit hint wins over inference."""
+        step = SimpleStep(name="200m", distance_meters=200, intensity_min=0, intensity_max=0)
+        structure = SimpleWorkoutStructure(length_unit="yard", steps=[step])
+        wire = build_wire_structure(structure)
+        assert wire["visualizationDistanceUnit"] == "yard"
+
+    def test_rest_stays_in_seconds(self):
+        """Rest steps in a distance workout keep the 'second' unit."""
+        rep = SimpleRepetitionBlock(
+            reps=20, steps=[
+                SimpleStep(name="25 free", distance_yards=25, intensity_min=0, intensity_max=0),
+                SimpleStep(name="Rest", duration_seconds=15, intensityClass="rest",
+                           intensity_min=0, intensity_max=0),
+            ],
+        )
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[rep]))
+        inner = wire["structure"][0]["steps"]
+        assert inner[0]["length"] == {"value": pytest.approx(22.86), "unit": "meter"}
+        assert inner[1]["length"] == {"value": 15, "unit": "second"}
+
+    def test_no_yard_unit_emitted_anywhere(self):
+        """No 'yard'/'yards' unit should ever appear in the wire structure."""
+        rep = SimpleRepetitionBlock(
+            reps=14, steps=[
+                SimpleStep(name="50", distance_yards=50, intensity_min=0, intensity_max=0),
+                SimpleStep(name="Rest", duration_seconds=20, intensityClass="rest",
+                           intensity_min=0, intensity_max=0),
+            ],
+        )
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[rep]))
+        blob = json.dumps(wire).lower()
+        assert "yard" not in blob or '"visualizationdistanceunit": "yard"' in blob
+        # No length unit should be yard
+        for block in wire["structure"]:
+            for s in block["steps"]:
+                assert s["length"]["unit"] in ("meter", "second")
+
+    def test_distance_begin_end_counter(self):
+        """Work steps advance the counter by metres, rests by a nominal 10."""
+        rep = SimpleRepetitionBlock(
+            reps=2, steps=[
+                SimpleStep(name="25", distance_yards=25, intensity_min=0, intensity_max=0),
+                SimpleStep(name="Rest", duration_seconds=15, intensityClass="rest",
+                           intensity_min=0, intensity_max=0),
+            ],
+        )
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[rep]))
+        block = wire["structure"][0]
+        # per rep: 22.86 (work) + 10 (rest) = 32.86; x2 reps = 65.72
+        assert block["begin"] == 0
+        assert block["end"] == pytest.approx(65.72)
+
+    def test_single_distance_step_wrapped_in_repetition(self):
+        step = SimpleStep(name="400 CD", distance_yards=400, intensity_min=0, intensity_max=0)
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        block = wire["structure"][0]
+        assert block["type"] == "step"
+        assert block["length"] == {"value": 1, "unit": "repetition"}
+
+    def test_distance_polyline_empty(self):
+        step = SimpleStep(name="200", distance_yards=200, intensity_min=0, intensity_max=0)
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[step]))
+        assert wire["polyline"] == []
+
+    def test_full_pool_set_round_trips(self):
+        """200 WU / 20x25 / 14x50 / 400 CD authored in yards."""
+        data = {
+            "length_unit": "yard",
+            "primaryIntensityMetric": "percentOfThresholdPace",
+            "steps": [
+                {"name": "Warm Up", "distance_yards": 200, "intensity_min": 0,
+                 "intensity_max": 0, "intensityClass": "warmUp"},
+                {"type": "repetition", "reps": 20, "steps": [
+                    {"name": "25 free", "distance_yards": 25, "intensity_min": 0, "intensity_max": 0},
+                    {"name": "Rest", "duration_seconds": 15, "intensityClass": "rest",
+                     "intensity_min": 0, "intensity_max": 0},
+                ]},
+                {"type": "repetition", "reps": 14, "steps": [
+                    {"name": "50 free", "distance_yards": 50, "intensity_min": 0, "intensity_max": 0},
+                    {"name": "Rest", "duration_seconds": 20, "intensityClass": "rest",
+                     "intensity_min": 0, "intensity_max": 0},
+                ]},
+                {"name": "Cool Down", "distance_yards": 400, "intensity_min": 0,
+                 "intensity_max": 0, "intensityClass": "coolDown"},
+            ],
+        }
+        parsed = parse_structure_input(data)
+        assert has_distance_steps(parsed)
+        wire = build_wire_structure(parsed)
+
+        assert wire["primaryLengthMetric"] == "distance"
+        assert wire["primaryIntensityTargetOrRange"] == "range"
+        assert wire["visualizationDistanceUnit"] == "yard"
+        assert len(wire["structure"]) == 4
+
+        # No yard units anywhere; all lengths are meter or second.
+        for block in wire["structure"]:
+            for s in block["steps"]:
+                assert s["length"]["unit"] in ("meter", "second")
+
+        # Warm up begin at 0; cumulative counter is monotonic.
+        prev_end = 0
+        for block in wire["structure"]:
+            assert block["begin"] == pytest.approx(prev_end)
+            assert block["end"] >= block["begin"]
+            prev_end = block["end"]
+
+        # The whole payload must be JSON-serialisable (no 400 from bad types).
+        json.dumps(wire)
+
+    def test_step_requires_a_length(self):
+        with pytest.raises(Exception):
+            SimpleStep(name="Bad", intensity_min=0, intensity_max=0)
+
+    def test_step_rejects_two_lengths(self):
+        with pytest.raises(Exception):
+            SimpleStep(name="Bad", distance_yards=25, duration_seconds=15,
+                       intensity_min=0, intensity_max=0)
+
+    def test_invalid_length_unit_rejected(self):
+        step = SimpleStep(name="x", distance_yards=25, intensity_min=0, intensity_max=0)
+        with pytest.raises(Exception):
+            SimpleWorkoutStructure(length_unit="furlong", steps=[step])
+
+    def test_compute_if_tss_zero_for_distance(self):
+        step = SimpleStep(name="200", distance_yards=200, intensity_min=80, intensity_max=90)
+        assert compute_if_tss(SimpleWorkoutStructure(steps=[step])) == (0.0, 0.0, 0)
 
 
 class TestValidation:

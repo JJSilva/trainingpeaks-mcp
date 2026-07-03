@@ -122,12 +122,30 @@ STRUCTURE_DESCRIPTION = (
     " rest (all recovery), coolDown, other."
     " Intensity values are % of threshold (FTP/HR/pace)."
     " Optional per-step: cadence_min, cadence_max (rpm)."
+    " DISTANCE (POOL SWIM) STEPS: instead of duration_seconds, a step may"
+    ' specify "distance_yards" or "distance_meters" (exactly one length field'
+    " per step). Rests stay time-based with duration_seconds. Set a top-level"
+    ' "length_unit": "yard"|"meter" to control the displayed unit (defaults to'
+    " yard when any step is authored in yards). Yards are converted to metres"
+    " on the wire (TP rejects raw yard units) and displayed back in the"
+    " authored unit. EXAMPLE POOL SET:"
+    ' {"length_unit": "yard", "primaryIntensityMetric": "percentOfThresholdPace",'
+    ' "steps": [{"name": "Warm Up", "distance_yards": 200, "intensity_min": 0,'
+    ' "intensity_max": 0, "intensityClass": "warmUp"},'
+    ' {"type": "repetition", "reps": 20, "steps": [{"name": "25 free",'
+    ' "distance_yards": 25, "intensity_min": 0, "intensity_max": 0},'
+    ' {"name": "Rest", "duration_seconds": 15, "intensityClass": "rest",'
+    ' "intensity_min": 0, "intensity_max": 0}]},'
+    ' {"name": "Cool Down", "distance_yards": 400, "intensity_min": 0,'
+    ' "intensity_max": 0, "intensityClass": "coolDown"}]}.'
 )
 RAW_STRUCTURE_DESCRIPTION = (
     "Native TrainingPeaks structured workout payload in builder format. "
     "Use this only when you already have a TP structure object with keys like "
     "structure, polyline, primaryLengthMetric, primaryIntensityMetric, and "
-    "primaryIntensityTargetOrRange."
+    "primaryIntensityTargetOrRange. primaryIntensityTargetOrRange is "
+    "auto-injected as 'range' if omitted, and any yard/yards length units are "
+    "converted to metres (with visualizationDistanceUnit set to yard)."
 )
 WORKOUT_FEELING_DESCRIPTION = "TrainingPeaks feeling value (0-10)."
 WORKOUT_RPE_DESCRIPTION = "Rating of perceived exertion (RPE), 0-10."
