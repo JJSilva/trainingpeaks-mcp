@@ -526,6 +526,33 @@ class TestUpdateWorkout:
         assert put_payload["workoutTypeFamilyId"] == 3
 
     @pytest.mark.asyncio
+    async def test_update_nutrition_replaces_prior_section(self):
+        """Updating nutrition should append under the header and replace any prior nutrition block."""
+        existing = {
+            "workoutId": 1001,
+            "title": "Original",
+            "workoutDay": "2026-03-01T00:00:00",
+            "workoutTypeFamilyId": 3,
+            "workoutTypeValueId": 3,
+            "description": "Tempo run.\n\n\n-----Nutrition-----\nOld plan",
+        }
+        get_response = APIResponse(success=True, data=existing)
+        put_response = APIResponse(success=True, data=None)
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(return_value=get_response)
+            mock_instance.put = AsyncMock(return_value=put_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_workout(workout_id="1001", nutrition="New plan")
+
+        assert result["success"] is True
+        put_payload = mock_instance.put.call_args[1]["json"]
+        assert put_payload["description"] == "Tempo run.\n\n\n-----Nutrition-----\nNew plan"
+
+    @pytest.mark.asyncio
     async def test_update_keeps_hidden(self):
         """The TrainingPeaks isHidden field should be preserved if not explicitly updated."""
         existing = {

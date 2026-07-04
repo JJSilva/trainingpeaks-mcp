@@ -59,6 +59,7 @@ class CreateWorkoutInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     duration_minutes: int | None = Field(default=None, ge=1, le=1440)
     description: str | None = Field(default=None, max_length=2000)
+    nutrition: str | None = Field(default=None, max_length=2000)
     distance_km: float | None = Field(default=None, gt=0, le=1000)
     tss_planned: float | None = Field(default=None, gt=0, le=2000)
     structure: Any = None
@@ -111,6 +112,7 @@ class UpdateWorkoutInput(BaseModel):
     subtype_id: int | None = Field(default=None, gt=0)
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
+    nutrition: str | None = Field(default=None, max_length=2000)
     date: date_type | datetime_type | None = None
     duration_minutes: float | None = Field(default=None, ge=0, le=1440)
     distance_km: float | None = Field(default=None, ge=0, le=1000)

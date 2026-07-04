@@ -446,12 +446,34 @@ def _m_to_km(metres: float | None) -> float | None:
     return metres / 1000 if metres is not None else None
 
 
+NUTRITION_SEPARATOR = "-----Nutrition-----"
+
+
+def _append_nutrition(description: str | None, nutrition: str) -> str:
+    """Append a nutrition section to a workout description.
+
+    The nutrition text is placed after the existing description, separated by
+    blank lines and a ``-----Nutrition-----`` header. Any prior nutrition
+    section is stripped first so repeated updates replace it rather than stack.
+    """
+    base = description or ""
+    idx = base.find(NUTRITION_SEPARATOR)
+    if idx != -1:
+        base = base[:idx]
+    base = base.rstrip()
+    section = f"{NUTRITION_SEPARATOR}\n{nutrition.strip()}"
+    if base:
+        return f"{base}\n\n\n{section}"
+    return section
+
+
 async def tp_create_workout(
     date_str: str,
     sport: str,
     title: str,
     duration_minutes: int | None = None,
     description: str | None = None,
+    nutrition: str | None = None,
     distance_km: float | None = None,
     tss_planned: float | None = None,
     structure: dict[str, Any] | str | None = None,
@@ -470,6 +492,8 @@ async def tp_create_workout(
         title: Workout title.
         duration_minutes: Planned duration in minutes (optional if structure provided).
         description: Optional workout description.
+        nutrition: Optional fueling/nutrition notes. Appended to the description
+            under a ``-----Nutrition-----`` header rather than added as a comment.
         distance_km: Optional planned distance in kilometres.
         tss_planned: Optional planned Training Stress Score.
         structure: Optional interval structure (dict or JSON string). Steps are
@@ -499,6 +523,7 @@ async def tp_create_workout(
             title=title,
             duration_minutes=duration_minutes,
             description=description,
+            nutrition=nutrition,
             distance_km=distance_km,
             tss_planned=tss_planned,
             structure=structure,
@@ -576,8 +601,11 @@ async def tp_create_workout(
         if effective_duration is not None:
             payload["totalTimePlanned"] = effective_duration / 60.0
 
-        if params.description:
-            payload["description"] = params.description
+        description_value = params.description
+        if params.nutrition:
+            description_value = _append_nutrition(description_value, params.nutrition)
+        if description_value:
+            payload["description"] = description_value
         if params.distance_km is not None:
             payload["distancePlanned"] = _km_to_m(params.distance_km)
         if effective_tss is not None:
@@ -628,6 +656,7 @@ async def tp_update_workout(
     subtype_id: int | None = None,
     title: str | None = None,
     description: str | None = None,
+    nutrition: str | None = None,
     date: str | None = None,
     duration_minutes: float | None = None,
     distance_km: float | None = None,
@@ -645,6 +674,9 @@ async def tp_update_workout(
 
     TP API requires full workout object on PUT - fetches existing, merges, then PUTs.
 
+    ``nutrition`` is appended to the description under a ``-----Nutrition-----``
+    header (replacing any prior nutrition section) rather than added as a comment.
+
     Supports either simplified ``structure`` input or a native
     ``structured_workout`` payload, but not both in the same call. The
     simplified ``structure`` accepts distance-based pool-swim steps
@@ -661,6 +693,7 @@ async def tp_update_workout(
             subtype_id=subtype_id,
             title=title,
             description=description,
+            nutrition=nutrition,
             date=date,
             duration_minutes=duration_minutes,
             distance_km=distance_km,
@@ -751,6 +784,10 @@ async def tp_update_workout(
             existing["title"] = params.title
         if params.description is not None:
             existing["description"] = params.description
+        if params.nutrition is not None:
+            existing["description"] = _append_nutrition(
+                existing.get("description"), params.nutrition,
+            )
         if params.date is not None:
             existing["workoutDay"] = _format_workout_day(params.date)
             if isinstance(params.date, datetime_type):

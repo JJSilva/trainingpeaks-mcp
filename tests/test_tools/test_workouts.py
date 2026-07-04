@@ -307,6 +307,60 @@ class TestTpCreateWorkout:
         assert payload["isHidden"] is False
 
     @pytest.mark.asyncio
+    async def test_create_workout_nutrition_appended_to_description(self):
+        """nutrition should be appended to the description under a header, not sent as a comment."""
+        create_response = APIResponse(
+            success=True,
+            data={"workoutId": 5005, "title": "Long Ride", "workoutDay": "2026-01-10T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-01-10",
+                sport="Bike",
+                title="Long Ride",
+                duration_minutes=120,
+                description="Endurance ride at Z2.",
+                nutrition="1 gel every 30min\n750ml water/hour",
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        assert payload["description"] == (
+            "Endurance ride at Z2.\n\n\n-----Nutrition-----\n1 gel every 30min\n750ml water/hour"
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_workout_nutrition_without_description(self):
+        """nutrition alone becomes the description with just the header (no leading blank lines)."""
+        create_response = APIResponse(
+            success=True,
+            data={"workoutId": 5006, "title": "Ride", "workoutDay": "2026-01-10T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            await tp_create_workout(
+                date_str="2026-01-10",
+                sport="Bike",
+                title="Ride",
+                duration_minutes=60,
+                nutrition="Fasted",
+            )
+
+        payload = mock_instance.post.call_args[1]["json"]
+        assert payload["description"] == "-----Nutrition-----\nFasted"
+
+    @pytest.mark.asyncio
     async def test_create_workout_hidden(self):
         """is_hidden should map to the TrainingPeaks isHidden payload field."""
         create_response = APIResponse(

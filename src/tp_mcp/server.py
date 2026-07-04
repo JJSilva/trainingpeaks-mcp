@@ -230,6 +230,10 @@ TOOLS = [
                     "description": "Planned duration in minutes (optional if structure provided)",
                 },
                 "description": {"type": "string", "description": "Optional description"},
+                "nutrition": {
+                    "type": "string",
+                    "description": "Optional fueling/nutrition notes, appended to the description under a -----Nutrition----- header",
+                },
                 "distance_km": {"type": "number", "description": "Optional distance in km"},
                 "tss_planned": {"type": "number", "description": "Optional planned TSS"},
                 "structure": {
@@ -271,6 +275,10 @@ TOOLS = [
                 "subtype_id": {"type": "integer"},
                 "title": {"type": "string"},
                 "description": {"type": "string"},
+                "nutrition": {
+                    "type": "string",
+                    "description": "Optional fueling/nutrition notes, appended to the description under a -----Nutrition----- header (replaces any prior nutrition section)",
+                },
                 "date": {"type": "string", "description": "YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"},
                 "duration_minutes": {"type": "number"},
                 "distance_km": {"type": "number"},
@@ -1100,7 +1108,8 @@ async def _h_create_workout(args):
     return await tp_create_workout(
         date_str=args["date"], sport=args["sport"], title=args["title"],
         duration_minutes=args.get("duration_minutes"),
-        description=args.get("description"), distance_km=args.get("distance_km"),
+        description=args.get("description"), nutrition=args.get("nutrition"),
+        distance_km=args.get("distance_km"),
         tss_planned=args.get("tss_planned"), structure=args.get("structure"),
         structured_workout=args.get("structured_workout"),
         subtype_id=args.get("subtype_id"), tags=args.get("tags"),
@@ -1113,7 +1122,8 @@ async def _h_update_workout(args):
     return await tp_update_workout(
         workout_id=args["workout_id"], sport=args.get("sport"),
         subtype_id=args.get("subtype_id"), title=args.get("title"),
-        description=args.get("description"), date=args.get("date"),
+        description=args.get("description"), nutrition=args.get("nutrition"),
+        date=args.get("date"),
         duration_minutes=args.get("duration_minutes"),
         distance_km=args.get("distance_km"), tss_planned=args.get("tss_planned"),
         tags=args.get("tags"), athlete_comment=args.get("athlete_comment"),
