@@ -300,6 +300,7 @@ async def tp_get_workouts(
                 {
                     "id": str(w.id),
                     "date": w.date.isoformat(),
+                    "start_time": w.start_time,
                     "title": w.title,
                     "type": w.workout_status,
                     "sport": w.sport,
@@ -395,6 +396,9 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
             return {
                 "id": str(workout.id),
                 "date": workout.date.isoformat(),
+                # Actual recorded start timestamp (time-of-day), which `date` strips.
+                # None for workouts with no recorded start (e.g. planned-only).
+                "start_time": raw_data.get("startTime"),
                 "title": workout.title,
                 "sport": workout.sport,
                 "workout_type": workout.workout_type,

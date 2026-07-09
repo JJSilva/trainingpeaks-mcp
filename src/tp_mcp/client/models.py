@@ -89,6 +89,7 @@ class WorkoutSummary(BaseModel):
 
     id: int = Field(alias="workoutId")
     workout_date: DateOnly = Field(alias="workoutDay")
+    start_time: str | None = Field(default=None, alias="startTime")
     title: str | None = None
     workout_type: str | int | None = Field(default=None, alias="workoutTypeValueId")
     duration_planned: int | float | None = Field(default=None, alias="totalTimePlanned")
