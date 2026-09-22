@@ -3,6 +3,7 @@
 from tp_mcp.tools.analyze import tp_analyze_workout
 from tp_mcp.tools.atp import tp_get_atp
 from tp_mcp.tools.auth_status import tp_auth_status
+from tp_mcp.tools.core_data import tp_get_core_data
 from tp_mcp.tools.equipment import (
     tp_create_equipment,
     tp_delete_equipment,
@@ -97,6 +98,7 @@ __all__ = [
     "tp_download_workout_file",
     "tp_get_athlete_settings",
     "tp_get_atp",
+    "tp_get_core_data",
     "tp_get_availability",
     "tp_get_equipment",
     "tp_get_events",

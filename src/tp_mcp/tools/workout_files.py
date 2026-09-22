@@ -10,6 +10,10 @@ from tp_mcp.client import TPClient
 
 FILE_DATA_DIR = Path(tempfile.gettempdir()) / "tp-mcp" / "files"
 
+# Cap on raw (pre-base64) bytes returned inline by tp_download_workout_file.
+# Base64 inflates by ~4/3, so a larger file would blow up the MCP response.
+MAX_INLINE_FILE_BYTES = 10 * 1024 * 1024
+
 
 def _is_numeric_id(value: str, *, allow_negative: bool = False) -> bool:
     """Return True when value is a numeric ID string."""
@@ -189,6 +193,7 @@ async def tp_download_workout_file(
     workout_id: str,
     file_id: str,
     output_path: str | None = None,
+    return_base64: bool = False,
 ) -> dict[str, Any]:
     """Download a workout file by file_id.
 
@@ -196,9 +201,11 @@ async def tp_download_workout_file(
         workout_id: The workout ID.
         file_id: The file ID (from device_files or attachment_files in tp_get_workout).
         output_path: Optional path to save the file. Can be a directory or full file path.
+        return_base64: Return the bytes inline as file_data_base64 instead of writing to disk.
+            Refused for files over MAX_INLINE_FILE_BYTES (measured pre-encoding).
 
     Returns:
-        Dict with file info and saved path, or error.
+        Dict with file info and either a saved path or file_data_base64, or error.
     """
     if not _is_numeric_id(workout_id):
         return {"isError": True, "error_code": "VALIDATION_ERROR", "message": "workout_id must be a numeric ID."}
@@ -207,6 +214,12 @@ async def tp_download_workout_file(
             "isError": True,
             "error_code": "VALIDATION_ERROR",
             "message": "file_id must be a numeric ID (can be negative).",
+        }
+    if return_base64 and output_path:
+        return {
+            "isError": True,
+            "error_code": "VALIDATION_ERROR",
+            "message": "Provide only one of output_path or return_base64.",
         }
 
     async with TPClient() as client:
@@ -232,6 +245,27 @@ async def tp_download_workout_file(
 
         filename = _parse_content_disposition_filename(response.content_disposition)
         content = response.content
+
+        if return_base64:
+            if len(content) > MAX_INLINE_FILE_BYTES:
+                return {
+                    "isError": True,
+                    "error_code": "VALIDATION_ERROR",
+                    "message": (
+                        f"File is {len(content)} bytes, over the {MAX_INLINE_FILE_BYTES} byte limit for"
+                        " return_base64. Omit return_base64 to save it to disk instead."
+                    ),
+                }
+            return {
+                "workout_id": workout_id,
+                "file_id": file_id,
+                "file_name": filename,
+                "content_type": response.content_type,
+                "size_bytes": len(content),
+                "file_data_base64": base64.b64encode(content).decode("ascii"),
+                "message": "Workout file downloaded successfully.",
+            }
+
         if output_path:
             target = Path(output_path)
             if target.exists() and target.is_dir():

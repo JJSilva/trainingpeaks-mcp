@@ -39,6 +39,7 @@ from tp_mcp.tools import (
     tp_get_athlete_settings,
     tp_get_atp,
     tp_get_availability,
+    tp_get_core_data,
     tp_get_equipment,
     tp_get_events,
     tp_get_fitness,
@@ -232,7 +233,10 @@ TOOLS = [
                 "description": {"type": "string", "description": "Optional description"},
                 "nutrition": {
                     "type": "string",
-                    "description": "Optional fueling/nutrition notes, appended to the description under a -----Nutrition----- header",
+                    "description": (
+                        "Optional fueling/nutrition notes, appended to the description under a"
+                        " -----Nutrition----- header"
+                    ),
                 },
                 "distance_km": {"type": "number", "description": "Optional distance in km"},
                 "tss_planned": {"type": "number", "description": "Optional planned TSS"},
@@ -277,7 +281,10 @@ TOOLS = [
                 "description": {"type": "string"},
                 "nutrition": {
                     "type": "string",
-                    "description": "Optional fueling/nutrition notes, appended to the description under a -----Nutrition----- header (replaces any prior nutrition section)",
+                    "description": (
+                        "Optional fueling/nutrition notes, appended to the description under a"
+                        " -----Nutrition----- header (replaces any prior nutrition section)"
+                    ),
                 },
                 "date": {"type": "string", "description": "YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"},
                 "duration_minutes": {"type": "number"},
@@ -451,6 +458,13 @@ TOOLS = [
                 "workout_id": {"type": "string", "description": "Workout ID"},
                 "file_id": {"type": "string", "description": "File ID from tp_get_workout"},
                 "output_path": {"type": "string", "description": "Directory or full path to save file"},
+                "return_base64": {
+                    "type": "boolean",
+                    "description": (
+                        "Return file bytes inline as file_data_base64 instead of saving to disk."
+                        " Refused above 10 MB. Cannot be combined with output_path."
+                    ),
+                },
             },
             "required": ["workout_id", "file_id"],
         },
@@ -465,6 +479,21 @@ TOOLS = [
                 "file_id": {"type": "string", "description": "File ID from tp_get_workout"},
             },
             "required": ["workout_id", "file_id"],
+        },
+    ),
+    Tool(
+        name="tp_get_core_data",
+        description=(
+            "Read CORE body temperature from a workout's device FIT file:"
+            " core temp, skin temp, and heat strain index (HSI) with time at or above 2/4/6/8."
+            " Requires the CORE Connect IQ data field to have been active during the recording."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "workout_id": {"type": "string", "description": "Workout ID"},
+            },
+            "required": ["workout_id"],
         },
     ),
     Tool(
@@ -1186,6 +1215,7 @@ async def _h_download_workout_file(args):
         workout_id=args["workout_id"],
         file_id=args["file_id"],
         output_path=args.get("output_path"),
+        return_base64=args.get("return_base64", False),
     )
 
 @_handler("tp_delete_workout_file")
@@ -1194,6 +1224,10 @@ async def _h_delete_workout_file(args):
         workout_id=args["workout_id"],
         file_id=args["file_id"],
     )
+
+@_handler("tp_get_core_data")
+async def _h_get_core_data(args):
+    return await tp_get_core_data(workout_id=args["workout_id"])
 
 @_handler("tp_validate_structure")
 async def _h_validate_structure(args): return await tp_validate_structure(structure=args["structure"])

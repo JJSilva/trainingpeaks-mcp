@@ -105,7 +105,12 @@ class TestListTools:
             "tp_get_workout_note",
         }
         assert v2_tools.issubset(names)
-        assert len(names) == len(core_tools) + len(v2_tools)
+        # v2.1 tools
+        v2_1_tools = {
+            "tp_get_core_data",
+        }
+        assert v2_1_tools.issubset(names)
+        assert len(names) == len(core_tools) + len(v2_tools) + len(v2_1_tools)
 
     @pytest.mark.asyncio
     async def test_create_workout_schema_includes_new_fields(self):
